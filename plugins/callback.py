@@ -17,11 +17,14 @@ import os
 import re
 import requests
 import ssl
+import subprocess
+import shlex
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
 episode_data = {}
+
 
 # ===== TLS Adapter for handshake fix =====
 class TLSAdapter(HTTPAdapter):
@@ -36,6 +39,130 @@ class TLSAdapter(HTTPAdapter):
 
 session_tls = requests.Session()
 session_tls.mount("https://", TLSAdapter())
+
+# ---------- aria2 helper ----------
+def aria2_download_with_progress(url, out_dir, out_name, msg=None, user_id=None,
+                                  max_conn=12, split=12, min_split_size="1M", poll_interval=1.5):
+    """
+    Run aria2c to download the file (multi-connection). While it's running,
+    poll the file size and update 'msg' every poll_interval seconds to show progress.
+    Returns full path on success, raises Exception on failure.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, out_name)
+
+    # Try HEAD to get total size
+    try:
+        head = session_tls.head(url, allow_redirects=True, timeout=15)
+        total = int(head.headers.get("content-length", 0))
+    except Exception:
+        total = 0
+
+    cmd = [
+        "aria2c",
+        "-x", str(max_conn),
+        "-s", str(split),
+        "--min-split-size=" + min_split_size,
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
+        "-o", out_name,
+        "-d", out_dir,
+        "--check-certificate=true",
+        "--console-log-level=warn",
+        url
+    ]
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    last_update = 0.0
+
+    try:
+        while proc.poll() is None:
+            # support cancel (if implemented)
+            if user_id is not None and globals().get("active_downloads", {}).get(user_id, {}).get("cancel"):
+                proc.terminate()
+                proc.wait(timeout=5)
+                if os.path.exists(out_path):
+                    try: os.remove(out_path)
+                    except: pass
+                raise Exception("Download cancelled by user")
+
+            # check partial file size
+            size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+
+            now = time.time()
+            if msg and (now - last_update) >= poll_interval:
+                if total > 0:
+                    percent = size / total * 100
+                    bar_len = 20
+                    filled = int(bar_len * size / total)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    text = f"Downloading: {os.path.basename(out_path)}\n[{bar}] {percent:.1f}%\n{size/1024/1024:.2f}MB / {total/1024/1024:.2f}MB"
+                else:
+                    text = f"Downloading: {os.path.basename(out_path)}\nDownloaded: {size/1024/1024:.2f} MB (size unknown)"
+                try:
+                    msg.edit_text(text)
+                except Exception:
+                    pass
+                last_update = now
+
+            time.sleep(0.25)
+
+        # finished
+        ret = proc.returncode
+        stderr = proc.stderr.read() if proc.stderr else ""
+        if ret != 0:
+            raise Exception(f"aria2c failed (code {ret}): {stderr[:400]}")
+        if not os.path.exists(out_path):
+            raise Exception("aria2c finished but file not found")
+        if msg:
+            try:
+                msg.edit_text(f"Download complete: {os.path.basename(out_path)}")
+            except:
+                pass
+        return out_path
+
+    except Exception:
+        try:
+            proc.terminate()
+        except:
+            pass
+        raise
+
+# ---------- wrapper: try aria2, fallback to python downloader ----------
+def download_helper(url, out_dir, out_name, progress_msg=None, user_id=None):
+    """
+    Attempt aria2 first. If aria2 missing or fails, fallback to existing safe_download.
+    Returns downloaded file path on success.
+    """
+    try:
+        subprocess.run(["aria2c", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        try:
+            path = aria2_download_with_progress(url, out_dir, out_name, msg=progress_msg, user_id=user_id)
+            return path
+        except Exception as e:
+            if progress_msg:
+                try:
+                    progress_msg.edit_text("aria2c failed, falling back to single-connection downloader...")
+                except:
+                    pass
+            print("aria2 failed, falling back:", e)
+    except Exception:
+        if progress_msg:
+            try:
+                progress_msg.edit_text("aria2c not found, using internal downloader...")
+            except:
+                pass
+
+    out_path = os.path.join(out_dir, out_name)
+    # Re-use your existing safe_download function for fallback
+    safe_download(url, out_path)
+    if progress_msg:
+        try:
+            progress_msg.edit_text("Download complete (fallback).")
+        except:
+            pass
+    return out_path
+
 
 # ========= ANIME DETAILS =========
 @Client.on_callback_query(filters.regex(r"^anime_"))
@@ -206,8 +333,11 @@ def download_and_upload_file(client, callback_query):
     dl_msg = callback_query.message.reply_text(f"📥 **Added to queue:**\n`{file_name}`\n⏳ Downloading...")
 
     try:
-        safe_download(direct_link, download_path)
-        dl_msg.edit("✅ Download complete. 📤 Uploading...")
+        # Try aria2 first, fall back to internal safe_download
+        downloaded_path = download_helper(direct_link, user_dir, file_name, progress_msg=dl_msg, user_id=user_id)
+        # download_helper returns the actual downloaded file path
+        download_path = downloaded_path
+        dl_msg.edit_text("✅ Download complete. 📤 Uploading...")
 
         thumb_path = None
         thumb_data = get_thumbnail(user_id) or episode_data.get(user_id, {}).get("poster")
@@ -225,13 +355,14 @@ def download_and_upload_file(client, callback_query):
         send_and_delete_file(client, callback_query.message.chat.id, download_path, thumb_path, caption, user_id)
 
         remove_from_queue(user_id, direct_link)
-        dl_msg.edit("🎉 **Episode Uploaded Successfully!**")
+        dl_msg.edit_text("🎉 **Episode Uploaded Successfully!**")
 
         if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
         if os.path.exists(user_dir): remove_directory(user_dir)
 
     except Exception as e:
         callback_query.message.reply_text(f"❌ Error: {e}")
+
 
 # ========= HELP / CLOSE =========
 @Client.on_callback_query()

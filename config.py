@@ -5,9 +5,9 @@
 import os
 API_ID = "23432718"
 API_HASH = "593fe8c703eac6d6586e7bbdfb9a35b4"
-BOT_TOKEN = "8220965561:AAH2ib26XA0VcpLRCrePpw6pHnFXopAFMs8"
+BOT_TOKEN = "7550602282:AAFCEMzaq_1mUFox4DwD6VjDgWyYEv_Bxus" #@fleet_admiral_bot
 #Logs
-LOG_CHANNEL = "-1002153949760" 
+LOG_CHANNEL = "-1002512700543" 
 # MongoDB setup
 MONGO_URL = "mongodb+srv://if3hzbz0td:23032020@cluster0.3gto12r.mongodb.net/?retryWrites=true&w=majority"
 DB_NAME = "cluster0"

@@ -13,3 +13,4 @@ aria2p  # Add this line
 #...For Web...#
 Flask
 gunicorn
+cloudscraper

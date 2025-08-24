@@ -186,7 +186,7 @@ def anime_details(client, callback_query):
         f"**⭐ Score**: {anime['score']}\n"
         f"[🔗 Anime Link]({anime_link})\n\n"
         f"**Bot Made By**\n"
-        f"    **[RAHAT](tg://user?id=1235222889)**"
+        f"[RAHAT]"
     )
 
     episode_data[callback_query.message.chat.id] = {

@@ -15,12 +15,7 @@ RUN apt-get update \
        ca-certificates \
        curl \
        gnupg \
-       build-essential \
-       jq \  # Added for JSON parsing in start scripts
     && rm -rf /var/lib/apt/lists/*
-
-# Create downloads directory with proper permissions
-RUN mkdir -p /app/downloads && chmod 755 /app/downloads
 
 # Copy and install Python requirements
 COPY requirements.txt /app/requirements.txt
@@ -32,12 +27,11 @@ COPY . /app
 # Cleanup old session files that might cause issues
 RUN rm -f *.session *.session-journal || true
 
-# Create aria2 configuration directory and file
-RUN mkdir -p /etc/aria2
-COPY aria2.conf /etc/aria2/aria2.conf
+# Create downloads directory with proper permissions
+RUN mkdir -p downloads && chmod 755 downloads
 
-# Expose port used by keep-alive webserver (if applicable)
+# Expose port used by Koyeb (required for web services)
 EXPOSE 8080
 
-# Default command - run the bot directly instead of web.sh
-CMD ["bash", "start.sh"]
+# Default command - run the web server to keep the service alive on Koyeb
+CMD ["bash", "web.sh"]
